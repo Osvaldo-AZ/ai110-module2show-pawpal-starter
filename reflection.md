@@ -5,7 +5,13 @@
 **a. Initial design**
 
 - Briefly describe your initial UML design.
+    The main objects will be Owner, Pet, Task, Schedule
+
 - What classes did you include, and what responsibilities did you assign to each?
+    Owner - Will represent the pet owner's profile.
+    Pet - The pet that will receive the care.
+    Task - What activity the pet will need.
+    Schedule - the daily plan for the pet.
 
 **b. Design changes**
 
