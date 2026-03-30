@@ -1,6 +1,6 @@
 # logic layer
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, time, datetime, timedelta
 from enum import Enum
 
@@ -37,10 +37,27 @@ class Task:
     preferred_time_of_day: str = ""  # e.g. "morning", "evening"
     is_required: bool = False
     completed: bool = False
+    recurrence: str = ""        # "daily", "weekly", or "" for one-off
+    due_date: date | None = None
 
     def mark_complete(self) -> None:
         """Mark this task as completed."""
         self.completed = True
+
+    def next_occurrence(self) -> Task | None:
+        """Return a new Task for the next recurrence, or None if this is a one-off.
+
+        The new task is identical except completed is reset to False and
+        due_date is advanced by the recurrence interval.
+        """
+        intervals: dict[str, timedelta] = {
+            "daily": timedelta(days=1),
+            "weekly": timedelta(weeks=1),
+        }
+        if self.recurrence not in intervals:
+            return None
+        base = self.due_date or date.today()
+        return replace(self, completed=False, due_date=base + intervals[self.recurrence])
 
     def to_dict(self) -> dict:
         """Return a plain-dict representation of this task."""
@@ -51,6 +68,8 @@ class Task:
             "duration_minutes": self.duration_minutes,
             "preferred_time_of_day": self.preferred_time_of_day,
             "is_required": self.is_required,
+            "recurrence": self.recurrence or "none",
+            "due_date": str(self.due_date) if self.due_date else "—",
         }
 
 
@@ -98,6 +117,27 @@ class Owner:
             for task in pet.get_applicable_tasks():
                 tagged.append((pet.name, task))
         return tagged
+
+    def filter_tasks(
+        self,
+        *,
+        completed: bool | None = None,
+        pet_name: str | None = None,
+    ) -> list[tuple[str, Task]]:
+        """Return tasks filtered by completion status and/or pet name.
+
+        Args:
+            completed: If True, return only completed tasks. If False, return
+                       only incomplete tasks. If None, completion is not filtered.
+            pet_name:  If given, return only tasks belonging to that pet
+                       (case-insensitive). If None, all pets are included.
+        """
+        results = self.get_all_tasks()
+        if pet_name is not None:
+            results = [(pn, t) for pn, t in results if pn.lower() == pet_name.lower()]
+        if completed is not None:
+            results = [(pn, t) for pn, t in results if t.completed == completed]
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +220,27 @@ class Scheduler:
                 )
 
         return schedule
+
+    def complete_task(self, pet_name: str, task: Task) -> Task | None:
+        """Mark a task complete and register its next occurrence if it recurs.
+
+        Marks the task done, then — if recurrence is set — creates the next
+        instance, appends it to the correct pet's task list, and adds it to
+        the scheduler's internal task list so future generate_plan() calls
+        include it.
+
+        Returns the newly created Task, or None for one-off tasks.
+        """
+        task.mark_complete()
+        next_task = task.next_occurrence()
+        if next_task is None:
+            return None
+        for pet in self.owner.pets:
+            if pet.name.lower() == pet_name.lower():
+                pet.tasks.append(next_task)
+                self.tasks.append((pet.name, next_task))
+                break
+        return next_task
 
     def _sort_by_priority(self) -> list[tuple[str, Task]]:
         """Sort tasks: required first, then by descending priority, then by preferred time."""
