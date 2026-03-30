@@ -16,7 +16,16 @@
 **b. Design changes**
 
 - Did your design change during implementation?
+    Yes
 - If yes, describe at least one change and why you made it.
+    I modified the initial skeleton based on the following AI suggestions: 
+        assigned_time: str → time	ScheduledTask now uses datetime.time — sortable and comparable
+
+        Owner.start_time added	generate_plan() can now compute actual clock times for each task
+
+        Schedule.skipped_tasks added	Dropped tasks are recorded with a reason — explain() can surface them
+        
+        _sort_by_priority() comment	Sorting strategy documented: required → priority value → preferred time
 
 ---
 
