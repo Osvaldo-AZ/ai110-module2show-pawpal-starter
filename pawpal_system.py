@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import date, time, datetime, timedelta
 from enum import Enum
+from itertools import combinations
+
+# Constant — recurrence intervals used by Task.next_occurrence()
+_RECURRENCE_INTERVALS: dict[str, timedelta] = {
+    "daily": timedelta(days=1),
+    "weekly": timedelta(weeks=1),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -47,17 +54,21 @@ class Task:
     def next_occurrence(self) -> Task | None:
         """Return a new Task for the next recurrence, or None if this is a one-off.
 
-        The new task is identical except completed is reset to False and
-        due_date is advanced by the recurrence interval.
+        Creates a copy of this task with completed reset to False and due_date
+        advanced by the recurrence interval defined in _RECURRENCE_INTERVALS.
+
+        Note: if due_date is None, today's date is used as the baseline.  This
+        means calling next_occurrence() on a task that was never given a due_date
+        anchors the next occurrence to the current day, not to when the task was
+        originally created.
+
+        Returns:
+            A new Task for the next occurrence, or None if recurrence is unset.
         """
-        intervals: dict[str, timedelta] = {
-            "daily": timedelta(days=1),
-            "weekly": timedelta(weeks=1),
-        }
-        if self.recurrence not in intervals:
+        if self.recurrence not in _RECURRENCE_INTERVALS:
             return None
         base = self.due_date or date.today()
-        return replace(self, completed=False, due_date=base + intervals[self.recurrence])
+        return replace(self, completed=False, due_date=base + _RECURRENCE_INTERVALS[self.recurrence])
 
     def to_dict(self) -> dict:
         """Return a plain-dict representation of this task."""
@@ -112,11 +123,11 @@ class Owner:
 
     def get_all_tasks(self) -> list[tuple[str, Task]]:
         """Collect applicable tasks from every pet, paired with the pet's name."""
-        tagged: list[tuple[str, Task]] = []
-        for pet in self.pets:
-            for task in pet.get_applicable_tasks():
-                tagged.append((pet.name, task))
-        return tagged
+        return [
+            (pet.name, task)
+            for pet in self.pets
+            for task in pet.get_applicable_tasks()
+        ]
 
     def filter_tasks(
         self,
@@ -126,18 +137,24 @@ class Owner:
     ) -> list[tuple[str, Task]]:
         """Return tasks filtered by completion status and/or pet name.
 
+        Delegates to get_all_tasks(), so species-excluded tasks (e.g. walks for
+        non-dogs) are never included in the results regardless of filters applied.
+        Both filters are applied in a single pass over the task list.
+
         Args:
-            completed: If True, return only completed tasks. If False, return
-                       only incomplete tasks. If None, completion is not filtered.
+            completed: If True, return only completed tasks.  If False, return
+                       only incomplete tasks.  If None, completion is not filtered.
             pet_name:  If given, return only tasks belonging to that pet
-                       (case-insensitive). If None, all pets are included.
+                       (case-insensitive).  If None, all pets are included.
+
+        Returns:
+            A list of (pet_name, Task) tuples matching all supplied filters.
         """
-        results = self.get_all_tasks()
-        if pet_name is not None:
-            results = [(pn, t) for pn, t in results if pn.lower() == pet_name.lower()]
-        if completed is not None:
-            results = [(pn, t) for pn, t in results if t.completed == completed]
-        return results
+        return [
+            (pn, t) for pn, t in self.get_all_tasks()
+            if (pet_name is None or pn.lower() == pet_name.lower())
+            and (completed is None or t.completed == completed)
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +167,7 @@ class Schedule:
     scheduled_tasks: list[ScheduledTask] = field(default_factory=list)
     skipped_tasks: list[tuple[Task, str]] = field(default_factory=list)  # (task, reason skipped)
     total_minutes_used: int = 0
+    conflicts: list[tuple[ScheduledTask, ScheduledTask]] = field(default_factory=list)
 
     def add_task(self, scheduled_task: ScheduledTask) -> None:
         """Append a scheduled task and update the running time total."""
@@ -170,6 +188,12 @@ class Schedule:
         if self.skipped_tasks:
             skipped_names = ", ".join(t.name for t, _ in self.skipped_tasks)
             lines.append(f"  Skipped: {skipped_names}")
+        if self.conflicts:
+            lines.append(f"  WARNING: {len(self.conflicts)} time conflict(s) detected!")
+            for a, b in self.conflicts:
+                lines.append(
+                    f"    [{a.pet_name}] {a.task.name} vs [{b.pet_name}] {b.task.name}"
+                )
         return "\n".join(lines)
 
     def explain(self) -> str:
@@ -183,6 +207,19 @@ class Schedule:
             lines.append("\nSkipped tasks:")
             for task, reason in self.skipped_tasks:
                 lines.append(f"• {task.name}: {reason}")
+        if self.conflicts:
+            lines.append("\nTime conflicts:")
+            for a, b in self.conflicts:
+                a_end = (datetime.combine(date.today(), a.assigned_time)
+                         + timedelta(minutes=a.task.duration_minutes)).time()
+                b_end = (datetime.combine(date.today(), b.assigned_time)
+                         + timedelta(minutes=b.task.duration_minutes)).time()
+                lines.append(
+                    f"• [{a.pet_name}] {a.task.name} "
+                    f"({a.assigned_time.strftime('%I:%M %p')}–{a_end.strftime('%I:%M %p')}) "
+                    f"overlaps [{b.pet_name}] {b.task.name} "
+                    f"({b.assigned_time.strftime('%I:%M %p')}–{b_end.strftime('%I:%M %p')})"
+                )
         return "\n".join(lines)
 
 
@@ -219,7 +256,79 @@ class Scheduler:
                     (task, f"Not enough time remaining ({remaining} min left, needs {task.duration_minutes} min)")
                 )
 
+        schedule.conflicts = self.detect_conflicts(schedule)
         return schedule
+
+    @staticmethod
+    def _to_minutes(t: time) -> int:
+        """Convert a time object to minutes since midnight."""
+        return t.hour * 60 + t.minute
+
+    def detect_conflicts(self, schedule: Schedule) -> list[tuple[ScheduledTask, ScheduledTask]]:
+        """Return all pairs of scheduled tasks whose time windows overlap.
+
+        Uses itertools.combinations to evaluate every unique pair in O(n²) time.
+        Two tasks conflict when their intervals [start, start+duration) intersect,
+        i.e. start_A < end_B AND start_B < end_A.  Detects both same-pet and
+        cross-pet overlaps.  For a fast single-pass alternative that trades
+        completeness for speed, use warn_on_conflicts() instead.
+
+        Args:
+            schedule: The Schedule whose scheduled_tasks list will be checked.
+
+        Returns:
+            A list of (ScheduledTask, ScheduledTask) pairs that overlap in time.
+            Returns an empty list when the schedule is conflict-free.
+        """
+        return [
+            (a, b)
+            for a, b in combinations(schedule.scheduled_tasks, 2)
+            if self._to_minutes(a.assigned_time) < self._to_minutes(b.assigned_time) + b.task.duration_minutes
+            and self._to_minutes(b.assigned_time) < self._to_minutes(a.assigned_time) + a.task.duration_minutes
+        ]
+
+    def warn_on_conflicts(self, schedule: Schedule) -> str | None:
+        """Lightweight O(n log n) conflict check — returns a warning string or None.
+
+        Sorts tasks by start time once, then walks the list linearly keeping a
+        running end-time cursor.  If the next task starts before the cursor,
+        a conflict is recorded.  Advances the cursor only when a task ends later
+        than the current furthest end, so non-adjacent overlaps against an earlier
+        task can be missed — use detect_conflicts() when complete coverage matters.
+
+        Args:
+            schedule: The Schedule whose scheduled_tasks list will be checked.
+
+        Returns:
+            A multi-line warning string listing each detected conflict, or None
+            if the schedule is clean.
+        """
+        sorted_tasks = sorted(
+            schedule.scheduled_tasks,
+            key=lambda st: self._to_minutes(st.assigned_time),
+        )
+
+        warnings: list[str] = []
+        running_end = 0       # minutes since midnight of the furthest end seen so far
+        last_st: ScheduledTask | None = None
+
+        for st in sorted_tasks:
+            start = self._to_minutes(st.assigned_time)
+            if start < running_end and last_st is not None:
+                warnings.append(
+                    f"[{st.pet_name}] '{st.task.name}' at "
+                    f"{st.assigned_time.strftime('%I:%M %p')} overlaps "
+                    f"[{last_st.pet_name}] '{last_st.task.name}' "
+                    f"(ends {(running_end // 60):02d}:{(running_end % 60):02d})"
+                )
+            end = start + st.task.duration_minutes
+            if end > running_end:
+                running_end = end
+                last_st = st
+
+        if not warnings:
+            return None
+        return "Schedule conflict warning:\n" + "\n".join(f"  - {w}" for w in warnings)
 
     def complete_task(self, pet_name: str, task: Task) -> Task | None:
         """Mark a task complete and register its next occurrence if it recurs.
@@ -259,10 +368,8 @@ class Scheduler:
 
     def _explain_choice(self, task: Task) -> str:
         """Build a human-readable string explaining why this task was scheduled."""
-        parts = []
-        if task.is_required:
-            parts.append("required task")
-        parts.append(f"{task.priority.name.lower()} priority")
-        if task.preferred_time_of_day:
-            parts.append(f"preferred time: {task.preferred_time_of_day}")
-        return ", ".join(parts)
+        return ", ".join(filter(None, [
+            "required task" if task.is_required else "",
+            f"{task.priority.name.lower()} priority",
+            f"preferred time: {task.preferred_time_of_day}" if task.preferred_time_of_day else "",
+        ]))

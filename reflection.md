@@ -41,6 +41,8 @@
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
 
+    One of the tradeoffs is that when generating the plan, it walks the sorted list top to bottom and skips any tasks that doesn't fit the remaining time. For this instance, the tradeoff should be ok since a pet owner typically only has at most a handful of tasks per day.
+
 ---
 
 ## 3. AI Collaboration

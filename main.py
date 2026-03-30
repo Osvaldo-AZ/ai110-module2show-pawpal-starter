@@ -235,3 +235,75 @@ print(f"  Vet Visit (one-off) -- next_occurrence returned: {result}")
 
 print()
 print("=" * 50)
+
+# ---------------------------------------------------------------------------
+# Conflict detection demo
+# ---------------------------------------------------------------------------
+
+print()
+print("=" * 50)
+print("  CONFLICT DETECTION DEMO")
+print("=" * 50)
+
+from pawpal_system import Schedule, ScheduledTask
+
+shared_scheduler = Scheduler(owner=jordan)
+
+# --- Scenario 1: exact same start time (same pet) ---
+# Mochi: Breakfast and Flea Meds both at 08:00
+same_time_plan = Schedule(date=date.today())
+same_time_plan.add_task(ScheduledTask(
+    task=Task("Breakfast",     TaskCategory.FEED, Priority.HIGH,   10, is_required=True),
+    assigned_time=time(8, 0),
+    pet_name="Mochi",
+))
+same_time_plan.add_task(ScheduledTask(
+    task=Task("Flea Meds",     TaskCategory.MEDS, Priority.MEDIUM, 5),
+    assigned_time=time(8, 0),  # exact same time as Breakfast
+    pet_name="Mochi",
+))
+same_time_plan.add_task(ScheduledTask(
+    task=Task("Evening Walk",  TaskCategory.WALK, Priority.HIGH,   20),
+    assigned_time=time(18, 0), # separate slot — no conflict
+    pet_name="Mochi",
+))
+
+same_time_plan.conflicts = shared_scheduler.detect_conflicts(same_time_plan)
+warning = shared_scheduler.warn_on_conflicts(same_time_plan)
+
+print("\n--- Scenario 1: two tasks at exactly the same time (same pet) ---")
+print(f"detect_conflicts found: {len(same_time_plan.conflicts)} conflict(s)")
+print(warning if warning else "No warning.")
+print()
+print(same_time_plan.get_summary())
+
+# --- Scenario 2: exact same start time (different pets) ---
+# Mochi's Morning Walk and Luna's Breakfast both at 08:00
+cross_pet_plan = Schedule(date=date.today())
+cross_pet_plan.add_task(ScheduledTask(
+    task=Task("Morning Walk",   TaskCategory.WALK, Priority.HIGH, 30, is_required=True),
+    assigned_time=time(8, 0),
+    pet_name="Mochi",
+))
+cross_pet_plan.add_task(ScheduledTask(
+    task=Task("Luna Breakfast", TaskCategory.FEED, Priority.HIGH,  5, is_required=True),
+    assigned_time=time(8, 0),  # same start as Mochi's Walk
+    pet_name="Luna",
+))
+cross_pet_plan.add_task(ScheduledTask(
+    task=Task("Brush Coat",     TaskCategory.GROOMING, Priority.MEDIUM, 15),
+    assigned_time=time(9, 0),  # separate slot — no conflict
+    pet_name="Luna",
+))
+
+cross_pet_plan.conflicts = shared_scheduler.detect_conflicts(cross_pet_plan)
+warning = shared_scheduler.warn_on_conflicts(cross_pet_plan)
+
+print("\n--- Scenario 2: two tasks at exactly the same time (different pets) ---")
+print(f"detect_conflicts found: {len(cross_pet_plan.conflicts)} conflict(s)")
+print(warning if warning else "No warning.")
+print()
+print(cross_pet_plan.get_summary())
+
+print()
+print("=" * 50)

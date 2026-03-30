@@ -22,6 +22,45 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## Smarter Scheduling
+
+The scheduling logic in `pawpal_system.py` goes beyond a basic task list. The following features were added to make the planner more useful for a real pet owner.
+
+### Task filtering
+
+`Owner.filter_tasks()` lets you query tasks across all pets in a single call. You can filter by completion status, pet name, or both at once:
+
+```python
+owner.filter_tasks(completed=False, pet_name="Mochi")
+```
+
+### Recurring tasks
+
+`Task` supports `recurrence` (`"daily"` or `"weekly"`) and a `due_date`. When you call `Scheduler.complete_task()`, the task is marked done and a fresh copy is automatically created for the next occurrence and added back to the pet's task list — no manual re-entry needed.
+
+```python
+next_task = scheduler.complete_task("Mochi", morning_walk)
+# next_task.due_date == today + 1 day
+```
+
+### Conflict detection
+
+Two methods detect scheduling overlaps using interval math (`start_A < end_B and start_B < end_A`):
+
+| Method | Strategy | Best for |
+|---|---|---|
+| `detect_conflicts(schedule)` | O(n²) — checks every pair | Detailed diagnostics, `explain()` output |
+| `warn_on_conflicts(schedule)` | O(n log n) — single sorted pass | Quick validation, UI banners |
+
+Both catch same-pet and cross-pet overlaps. `detect_conflicts` is thorough; `warn_on_conflicts` trades completeness for speed and returns a plain warning string or `None`.
+
+### Known tradeoffs
+
+- The scheduler uses a **greedy algorithm**: tasks are sorted by priority and placed in the first available slot. Skipped tasks are not retried even if a smaller task would have fit.
+- `preferred_time_of_day` influences sort order but does not constrain the actual assigned time slot.
+- `warn_on_conflicts` can miss overlaps between non-adjacent tasks; use `detect_conflicts` when full coverage is required.
+- If a recurring task has no `due_date`, `next_occurrence()` anchors to today's date rather than the original schedule date.
+
 ## Getting started
 
 ### Setup
